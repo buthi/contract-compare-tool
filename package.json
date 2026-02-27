@@ -10,7 +10,8 @@
   },
   "dependencies": {
     "diff-match-patch": "^1.0.5",
-    "hono": "^4.12.3"
+    "hono": "^4.12.3",
+    "pako": "^2.1.0"
   },
   "devDependencies": {
     "@hono/vite-build": "^1.2.0",

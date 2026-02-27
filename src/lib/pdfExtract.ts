@@ -1,148 +1,128 @@
 /**
- * 轻量级 PDF 纯文本提取器
- * 完全基于 Web API（DecompressionStream / TextDecoder），兼容 Cloudflare Workers
- * 
- * 流程：
- * 1. 扫描 PDF 文件，找到所有 stream/endstream 块
- * 2. 对 FlateDecode 流用 DecompressionStream 解压
- * 3. 从解压后的内容流中，用正则提取 BT...ET 块里的文本操作符
+ * 轻量级 PDF 纯文本提取器 v2
+ * - 完全字节级扫描，不依赖 DOM/Node
+ * - 用 pako 做 zlib/deflate 解压（纯 JS，兼容 Cloudflare Workers）
+ * - 支持 UTF-16BE / GBK / Latin-1 编码
  */
+import { inflate as pakoInflate } from 'pako'
 
 export async function extractTextFromPdf(buffer: ArrayBuffer): Promise<string> {
   const bytes = new Uint8Array(buffer)
+  const streams = locateStreams(bytes)
   const allText: string[] = []
 
-  // 遍历 PDF 文件找所有 stream 对象
-  const streams = await extractAllStreams(bytes)
+  for (const { dataBytes, isFlate } of streams) {
+    let contentBytes: Uint8Array
 
-  for (const { data, isFlate } of streams) {
-    let content: string
     if (isFlate) {
       try {
-        const decompressed = await inflate(data)
-        content = new TextDecoder('latin1').decode(decompressed)
+        // pako.inflate 自动处理 zlib 头（RFC 1950）和 raw deflate（RFC 1951）
+        contentBytes = pakoInflate(dataBytes)
       } catch {
-        content = new TextDecoder('latin1').decode(data)
+        try {
+          // 跳过 2 字节 zlib 头，按 raw deflate 尝试
+          contentBytes = pakoInflate(dataBytes.slice(2), { raw: true })
+        } catch {
+          continue
+        }
       }
     } else {
-      content = new TextDecoder('latin1').decode(data)
+      contentBytes = dataBytes
+    }
+
+    // 解码为字符串（先尝试 UTF-8，失败则用 Latin-1）
+    let content: string
+    try {
+      content = new TextDecoder('utf-8', { fatal: true }).decode(contentBytes)
+    } catch {
+      content = new TextDecoder('latin1').decode(contentBytes)
     }
 
     const text = extractTextFromContentStream(content)
-    if (text.trim().length > 0) {
+    if (text.trim().length > 2) {
       allText.push(text)
     }
   }
 
   const result = allText.join('\n')
-  return result.replace(/\r\n|\r/g, '\n').replace(/\n{3,}/g, '\n\n').trim()
+  return cleanText(result)
 }
 
-// ── 解压 deflate 数据（Cloudflare Workers 原生支持） ──────────
-async function inflate(data: Uint8Array): Promise<Uint8Array> {
-  // PDF FlateDecode 使用 zlib 格式（带 2 字节 zlib 头），需要用 'deflate' 解压器
-  // 如果 zlib 头失败，尝试 raw deflate
-  try {
-    return await decompress(data, 'deflate')
-  } catch {
-    // 某些 PDF 使用 raw deflate（无 zlib 头）
-    return await decompress(data, 'deflate-raw')
-  }
-}
-
-async function decompress(data: Uint8Array, format: 'deflate' | 'deflate-raw'): Promise<Uint8Array> {
-  const ds = new DecompressionStream(format)
-  const writer = ds.writable.getWriter()
-  const reader = ds.readable.getReader()
-
-  writer.write(data)
-  writer.close()
-
-  const chunks: Uint8Array[] = []
-  while (true) {
-    const { done, value } = await reader.read()
-    if (done) break
-    chunks.push(value)
-  }
-
-  const total = chunks.reduce((s, c) => s + c.length, 0)
-  const result = new Uint8Array(total)
-  let offset = 0
-  for (const c of chunks) {
-    result.set(c, offset)
-    offset += c.length
-  }
-  return result
-}
-
-// ── 扫描 PDF bytes，提取所有流 ───────────────────────────────
-interface PdfStream {
-  data: Uint8Array
+// ── 字节级扫描，定位所有 stream...endstream 块 ────────────────
+interface StreamInfo {
+  dataBytes: Uint8Array
   isFlate: boolean
 }
 
-async function extractAllStreams(bytes: Uint8Array): Promise<PdfStream[]> {
-  const results: PdfStream[] = []
-  const latin1 = new TextDecoder('latin1')
-  const raw = latin1.decode(bytes)
+function locateStreams(bytes: Uint8Array): StreamInfo[] {
+  const results: StreamInfo[] = []
 
-  // 找所有 stream/endstream 对
-  let searchFrom = 0
-  while (true) {
-    // 找 "stream" 关键字（后跟 \r\n 或 \n）
-    const streamIdx = findKeyword(raw, 'stream', searchFrom)
-    if (streamIdx === -1) break
+  // PDF 关键词的字节序列
+  const STREAM    = [115, 116, 114, 101, 97, 109]       // "stream"
+  const ENDSTREAM = [101, 110, 100, 115, 116, 114, 101, 97, 109] // "endstream"
 
-    const afterStream = streamIdx + 6 // 跳过 "stream"
-    // stream 后必须紧跟 CR+LF 或 LF
-    let dataStart = afterStream
-    if (raw[dataStart] === '\r' && raw[dataStart + 1] === '\n') dataStart += 2
-    else if (raw[dataStart] === '\n') dataStart += 1
-    else { searchFrom = afterStream; continue }
+  let i = 0
+  while (i < bytes.length - 10) {
+    // 查找 "stream"
+    const si = indexOfBytes(bytes, STREAM, i)
+    if (si === -1) break
 
-    // 找对应的 endstream
-    const endIdx = raw.indexOf('endstream', dataStart)
-    if (endIdx === -1) break
+    // "stream" 之后必须跟 \n 或 \r\n
+    let dataStart = si + 6
+    if (dataStart < bytes.length && bytes[dataStart] === 0x0d) dataStart++ // \r
+    if (dataStart < bytes.length && bytes[dataStart] === 0x0a) dataStart++ // \n
+    else { i = si + 6; continue } // 不是合法流，跳过
 
-    // endstream 前可能有 \r\n 或 \n
-    let dataEnd = endIdx
-    if (dataEnd > 0 && raw[dataEnd - 1] === '\n') dataEnd--
-    if (dataEnd > 0 && raw[dataEnd - 1] === '\r') dataEnd--
+    // 查找 "endstream"
+    const ei = indexOfBytes(bytes, ENDSTREAM, dataStart)
+    if (ei === -1) break
 
-    // 提取流数据
-    const streamData = bytes.slice(dataStart, dataEnd)
+    // endstream 前可能有 \n 或 \r\n
+    let dataEnd = ei
+    if (dataEnd > 0 && bytes[dataEnd - 1] === 0x0a) dataEnd--
+    if (dataEnd > 0 && bytes[dataEnd - 1] === 0x0d) dataEnd--
 
-    // 判断是否是 FlateDecode
-    // 向前查找最近的 << 字典
-    const dictEnd = streamIdx
-    const dictStart = raw.lastIndexOf('<<', dictEnd)
-    const dict = dictStart >= 0 ? raw.slice(dictStart, Math.min(dictEnd, dictStart + 1000)) : ''
-    const isFlate = /\/Filter\s*\/FlateDecode|\/Filter\s*\[.*\/FlateDecode/.test(dict) ||
-      dict.includes('/Fl ')
+    if (dataEnd > dataStart) {
+      const dataBytes = bytes.slice(dataStart, dataEnd)
 
-    if (streamData.length > 0) {
-      results.push({ data: streamData, isFlate })
+      // 判断是否 FlateDecode：向前扫描字典区（最多 2KB）
+      const dictBytes = bytes.slice(Math.max(0, si - 2048), si)
+      const dictStr = new TextDecoder('latin1').decode(dictBytes)
+      const isFlate = /\/Filter\s*\/FlateDecode|\/Filter\s*\[.*?\/FlateDecode|\/Fl\s/.test(dictStr)
+
+      results.push({ dataBytes, isFlate })
     }
 
-    searchFrom = endIdx + 9
+    i = ei + 9
   }
 
   return results
 }
 
-function findKeyword(text: string, keyword: string, from: number): number {
-  return text.indexOf(keyword, from)
+// 字节数组中查找子序列，返回索引（-1 表示未找到）
+function indexOfBytes(haystack: Uint8Array, needle: number[], from: number): number {
+  outer: for (let i = from; i <= haystack.length - needle.length; i++) {
+    for (let j = 0; j < needle.length; j++) {
+      if (haystack[i + j] !== needle[j]) continue outer
+    }
+    return i
+  }
+  return -1
 }
 
-// ── 从内容流中提取文本 ──────────────────────────────────────
+// ── 从内容流字符串中提取文本 ─────────────────────────────────
 function extractTextFromContentStream(content: string): string {
   const lines: string[] = []
+  let pos = 0
 
-  // 找到所有 BT...ET 块
-  let btIdx = 0
   while (true) {
-    const bt = content.indexOf('BT', btIdx)
+    const bt = content.indexOf('BT', pos)
     if (bt === -1) break
+
+    // 确保 BT 是一个独立操作符（前后是空白或行首）
+    const charBefore = bt > 0 ? content[bt - 1] : '\n'
+    if (!/[\s\n\r]/.test(charBefore)) { pos = bt + 2; continue }
+
     const et = content.indexOf('ET', bt + 2)
     if (et === -1) break
 
@@ -150,37 +130,56 @@ function extractTextFromContentStream(content: string): string {
     const text = parseTextBlock(block)
     if (text.trim()) lines.push(text)
 
-    btIdx = et + 2
+    pos = et + 2
+  }
+
+  // 如果没找到 BT...ET，做全文扫描
+  if (lines.length === 0) {
+    const direct = scanDirectText(content)
+    if (direct) lines.push(direct)
   }
 
   return lines.join('\n')
 }
 
-// ── 解析单个 BT...ET 块 ──────────────────────────────────────
+// ── 解析 BT...ET 块内的操作符 ────────────────────────────────
 function parseTextBlock(block: string): string {
   const parts: string[] = []
-
-  // 匹配所有文本相关操作符
-  // Tj: (string) Tj
-  // TJ: [(string) n (string) ...] TJ
-  // ': (string) '   (move to next line then show text)
-  // T*: move to next line
-  const re = /\(([^)\\]*(?:\\(?:.|(?:\r\n|\r|\n))[^)\\]*)*)\)\s*([Tj'"])|(\[[\s\S]*?\])\s*TJ|(T\*)/g
-  let m: RegExpExecArray | null
-
   let lineBuffer = ''
+  let prevY = 0
 
+  // 扫描位置移动操作（Td/TD/Tm）判断行距
+  // 注意：Tm 格式为 a b c d e f Tm，e=x, f=y
+  const re = new RegExp(
+    // (string) Tj 或 (string) '
+    '\\(([^)\\\\]*(?:\\\\(?:.|\\r?\\n)[^)\\\\]*)*)\\)\\s*([Tj\'"])|' +
+    // [(...)...] TJ
+    '(\\[(?:[^\\[\\]]*(?:\\((?:[^)\\\\]|\\\\.)*\\))?)*\\])\\s*TJ|' +
+    // T*
+    '(T\\*)|' +
+    // n Td / TD
+    '(-?\\d+(?:\\.\\d+)?)\\s+(-?\\d+(?:\\.\\d+)?)\\s+(T[dD])',
+    'g'
+  )
+
+  let m: RegExpExecArray | null
   while ((m = re.exec(block)) !== null) {
     if (m[4]) {
-      // T* - 换行
+      // T* 换行
       if (lineBuffer) { parts.push(lineBuffer); lineBuffer = '' }
+    } else if (m[5] !== undefined) {
+      // Td/TD 位移
+      const dy = parseFloat(m[6])
+      if (dy < -1 || (dy === 0 && lineBuffer)) {
+        // 竖向位移表示换行
+        if (lineBuffer) { parts.push(lineBuffer); lineBuffer = '' }
+      }
     } else if (m[3]) {
       // TJ array
       lineBuffer += parseTJArray(m[3])
     } else if (m[1] !== undefined) {
       const str = decodePdfString(m[1])
       if (m[2] === "'") {
-        // ' 操作符：换行后显示
         if (lineBuffer) { parts.push(lineBuffer); lineBuffer = '' }
         lineBuffer = str
       } else {
@@ -188,22 +187,37 @@ function parseTextBlock(block: string): string {
       }
     }
   }
-
   if (lineBuffer) parts.push(lineBuffer)
-  return parts.filter(Boolean).join('\n')
+  return parts.filter(s => s.trim()).join('\n')
 }
 
 // ── 解析 TJ 数组 ─────────────────────────────────────────────
 function parseTJArray(arr: string): string {
+  // [(text1) -200 (text2) 150 (text3)] → text1text2text3
   let result = ''
   const strRe = /\(([^)\\]*(?:\\(?:.|(?:\r\n|\r|\n))[^)\\]*)*)\)/g
   let m: RegExpExecArray | null
   while ((m = strRe.exec(arr)) !== null) {
-    const decoded = decodePdfString(m[1])
-    // 数字位移较大时（> 250）表示单词间距
-    result += decoded
+    result += decodePdfString(m[1])
   }
   return result
+}
+
+// ── 直接扫描全文（fallback） ──────────────────────────────────
+function scanDirectText(content: string): string {
+  const parts: string[] = []
+  const re = /\(([^)\\]*(?:\\(?:.|(?:\r\n|\r|\n))[^)\\]*)*)\)\s*Tj|\[[\s\S]*?\]\s*TJ/g
+  let m: RegExpExecArray | null
+  while ((m = re.exec(content)) !== null) {
+    const s = m[0]
+    if (s.endsWith('Tj')) {
+      const inner = s.match(/^\(([^)\\]*(?:\\.[^)\\]*)*)\)/)
+      if (inner) parts.push(decodePdfString(inner[1]))
+    } else {
+      parts.push(parseTJArray(s))
+    }
+  }
+  return parts.join('')
 }
 
 // ── PDF 字符串解码 ────────────────────────────────────────────
@@ -212,75 +226,80 @@ function decodePdfString(raw: string): string {
   let s = ''
   let i = 0
   while (i < raw.length) {
-    if (raw[i] === '\\') {
+    if (raw[i] !== '\\') { s += raw[i++]; continue }
+    i++
+    if (i >= raw.length) break
+    const c = raw[i]
+    if      (c === 'n')  { s += '\n'; i++ }
+    else if (c === 'r')  { s += '\r'; i++ }
+    else if (c === 't')  { s += '\t'; i++ }
+    else if (c === '\\') { s += '\\'; i++ }
+    else if (c === '(')  { s += '(';  i++ }
+    else if (c === ')')  { s += ')';  i++ }
+    else if (c >= '0' && c <= '7') {
+      let oct = ''
+      while (i < raw.length && raw[i] >= '0' && raw[i] <= '7' && oct.length < 3) oct += raw[i++]
+      s += String.fromCharCode(parseInt(oct, 8))
+    } else if (c === '\r') {
+      if (raw[i + 1] === '\n') i++
       i++
-      if (i >= raw.length) break
-      const c = raw[i]
-      if (c === 'n') { s += '\n'; i++ }
-      else if (c === 'r') { s += '\r'; i++ }
-      else if (c === 't') { s += '\t'; i++ }
-      else if (c === '\\') { s += '\\'; i++ }
-      else if (c === '(') { s += '('; i++ }
-      else if (c === ')') { s += ')'; i++ }
-      else if (c >= '0' && c <= '7') {
-        // 八进制转义
-        let oct = ''
-        while (i < raw.length && raw[i] >= '0' && raw[i] <= '7' && oct.length < 3) {
-          oct += raw[i++]
-        }
-        s += String.fromCharCode(parseInt(oct, 8))
-      } else if (c === '\r' || c === '\n') {
-        // 续行
-        if (c === '\r' && raw[i + 1] === '\n') i++
-        i++
-      } else {
-        s += c; i++
-      }
-    } else {
-      s += raw[i++]
-    }
+    } else if (c === '\n') {
+      i++
+    } else { s += c; i++ }
   }
 
-  // 检测 UTF-16BE BOM（\xFE\xFF）
+  // UTF-16BE BOM → \xFE\xFF
   if (s.length >= 2 && s.charCodeAt(0) === 0xfe && s.charCodeAt(1) === 0xff) {
     return decodeUtf16be(s.slice(2))
   }
 
-  // 中文 PDF 常用 GBK/GB2312：尝试检测非 ASCII 字符组合
-  // 如果包含大量高字节对，尝试 GBK 解码
+  // 含高字节 → 尝试 GBK 解码（中文 PDF 常见）
   if (hasHighBytes(s)) {
-    const gbkResult = tryGbkDecode(s)
-    if (gbkResult) return gbkResult
+    const gbk = tryDecode(s, 'gbk')
+    if (gbk) return gbk
+    const b5 = tryDecode(s, 'big5')
+    if (b5) return b5
   }
 
   return s
 }
 
 function decodeUtf16be(s: string): string {
-  let result = ''
+  let r = ''
   for (let i = 0; i + 1 < s.length; i += 2) {
     const code = (s.charCodeAt(i) << 8) | s.charCodeAt(i + 1)
-    if (code > 0) result += String.fromCodePoint(code)
+    if (code > 0) r += String.fromCodePoint(code)
   }
-  return result
+  return r
 }
 
 function hasHighBytes(s: string): boolean {
-  let count = 0
-  for (let i = 0; i < Math.min(s.length, 100); i++) {
-    if (s.charCodeAt(i) > 127) count++
+  let n = 0
+  for (let i = 0; i < Math.min(s.length, 200); i++) {
+    if (s.charCodeAt(i) > 127) n++
   }
-  return count > 2
+  return n > s.length * 0.1
 }
 
-function tryGbkDecode(s: string): string | null {
+function tryDecode(s: string, encoding: string): string | null {
   try {
-    // 转为字节数组再用 GBK 解码
     const bytes = new Uint8Array(s.length)
     for (let i = 0; i < s.length; i++) bytes[i] = s.charCodeAt(i) & 0xff
-    const decoder = new TextDecoder('gbk')
-    return decoder.decode(bytes)
+    const result = new TextDecoder(encoding, { fatal: true }).decode(bytes)
+    // 验证解码结果是否有意义（包含可打印字符）
+    const printable = result.replace(/\s/g, '')
+    if (printable.length > 0 && !/[\uFFFD]/.test(result)) return result
+    return null
   } catch {
     return null
   }
+}
+
+// ── 清理文本 ─────────────────────────────────────────────────
+function cleanText(text: string): string {
+  return text
+    .replace(/\r\n|\r/g, '\n')
+    .replace(/[ \t]+/g, ' ')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
 }

@@ -570,28 +570,111 @@ def align_clauses(template_clauses: List[Clause], target_clauses: List[Clause]) 
 
 
 # ─────────────────────────────────────────────
+# 公司模型网关路由配置
+# ─────────────────────────────────────────────
+
+GATEWAY_BASE      = "https://llm.mcisaas.com/v1"
+GATEWAY_ANTHROPIC = "https://llm.mcisaas.com/anthropic/v1/messages"
+
+# 新版 GPT 模型（input 风格请求体）
+GPT_NEW_MODELS = {"gpt-5.2-chat", "gpt-5.3-codex"}
+# Anthropic 模型
+CLAUDE_MODELS  = {"claude-sonnet-4-5-20250929"}
+# 其余走标准 OpenAI chat.completions
+
+
+def _call_gpt_new(headers: dict, model: str, prompt: str, system: str) -> str:
+    """新版 GPT 接口：input + max_output_tokens"""
+    import requests as req_lib
+    url = GATEWAY_BASE.rstrip("/") + "/chat/completions"
+    payload = {
+        "model": model,
+        "input": [
+            {"role": "system", "content": system},
+            {"role": "user",   "content": prompt},
+        ],
+        "max_output_tokens": 1024,
+    }
+    resp = req_lib.post(url, headers=headers, json=payload, timeout=180)
+    resp.raise_for_status()
+    data = resp.json()
+    # 兼容两种响应结构
+    if "choices" in data:
+        return data["choices"][0]["message"]["content"].strip()
+    if "output" in data:
+        out = data["output"]
+        if isinstance(out, list):
+            return out[0].get("content", "") if isinstance(out[0], dict) else str(out[0])
+        return str(out)
+    raise ValueError(f"未知响应结构: {list(data.keys())}")
+
+
+def _call_anthropic(headers: dict, model: str, prompt: str, system: str) -> str:
+    """Anthropic messages 接口"""
+    import requests as req_lib
+    payload = {
+        "model": model,
+        "max_tokens": 1024,
+        "system": system,
+        "messages": [{"role": "user", "content": prompt}],
+    }
+    resp = req_lib.post(GATEWAY_ANTHROPIC, headers=headers, json=payload, timeout=180)
+    resp.raise_for_status()
+    data = resp.json()
+    return data["content"][0]["text"].strip()
+
+
+def _call_openai_compat(headers: dict, model: str, prompt: str, system: str) -> str:
+    """标准 OpenAI chat.completions 接口"""
+    import requests as req_lib
+    url = GATEWAY_BASE.rstrip("/") + "/chat/completions"
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user",   "content": prompt},
+        ],
+        "temperature": 0.1,
+    }
+    resp = req_lib.post(url, headers=headers, json=payload, timeout=180)
+    resp.raise_for_status()
+    data = resp.json()
+    return data["choices"][0]["message"]["content"].strip()
+
+
+def _route_llm_call(model: str, api_key: str, prompt: str, system: str) -> str:
+    """根据模型名自动路由到正确的 URL + 请求格式"""
+    headers = {
+        "Authorization": f"Bearer {api_key.strip()}",
+        "Content-Type":  "application/json",
+        "Accept":        "application/json",
+    }
+    if model in GPT_NEW_MODELS:
+        return _call_gpt_new(headers, model, prompt, system)
+    if model in CLAUDE_MODELS:
+        return _call_anthropic(headers, model, prompt, system)
+    # kimi-k2.5 及其他 OpenAI 兼容模型
+    return _call_openai_compat(headers, model, prompt, system)
+
+
+# ─────────────────────────────────────────────
 # AI 判断（可选，需要配置 LLM）
 # ─────────────────────────────────────────────
 
 def judge_diffs_with_llm(
     diffs: List[ClauseDiff],
-    base_url: str,
     api_key: str,
     model: str,
+    base_url: str = "",      # 保留参数签名兼容性，实际由路由函数决定
     temperature: float = 0.1,
 ) -> None:
-    import requests as req_lib
 
-    url = base_url.rstrip("/") + "/chat/completions"
-    headers = {
-        "Content-Type": "application/json",
-        "Accept": "application/json",
-        "Authorization": f"Bearer {api_key.strip()}",
-    }
+    SYSTEM = "你是严谨的法务条款差异审查助手，只能输出 JSON。"
 
     for d in diffs:
         if d.status == "same" and not d.substantive:
             continue
+
         user_prompt = f"""你是一名资深合同审查助手。请判断以下两段条款之间是否存在【法律效果上的重大差异】。
 
 核心判断原则：
@@ -618,31 +701,17 @@ def judge_diffs_with_llm(
 {d.target_raw or "[无]"}
 """.strip()
 
-        payload = {
-            "model": model,
-            "messages": [
-                {"role": "system", "content": "你是严谨的法务条款差异审查助手，只能输出 JSON。"},
-                {"role": "user", "content": user_prompt},
-            ],
-            "temperature": temperature,
-        }
-
         try:
-            resp = req_lib.post(url, headers=headers, json=payload, timeout=180)
+            content = _route_llm_call(model, api_key, user_prompt, SYSTEM)
             d.ai_checked = True
-            if resp.status_code != 200:
-                d.ai_reason = f"LLM 调用失败: HTTP {resp.status_code}"
-                continue
-            data = resp.json()
-            content = data["choices"][0]["message"]["content"].strip()
             content = re.sub(r"^```json\s*", "", content)
-            content = re.sub(r"^```\s*", "", content)
-            content = re.sub(r"\s*```$", "", content)
+            content = re.sub(r"^```\s*",    "", content)
+            content = re.sub(r"\s*```$",    "", content)
             obj = json.loads(content)
             d.ai_material = bool(obj.get("material", False))
             d.ai_category = str(obj.get("category", "")).strip()
-            d.ai_reason = str(obj.get("reason", "")).strip()
-            d.llm_summary = str(obj.get("summary", "")).strip()
+            d.ai_reason   = str(obj.get("reason",   "")).strip()
+            d.llm_summary = str(obj.get("summary",  "")).strip()
         except Exception as e:
             d.ai_checked = True
             d.ai_reason = f"LLM 解析失败: {e}"
@@ -720,10 +789,9 @@ def api_compare():
     if not allowed_file(target_file.filename):
         return jsonify({"ok": False, "error": f"对比文档格式不支持，仅支持: {', '.join(ALLOWED_EXTENSIONS)}"}), 400
 
-    # 获取可选 LLM 配置
-    llm_base_url = request.form.get("llm_base_url", "").strip()
+    # 获取可选 LLM 配置（base_url 由后端路由决定，不再由前端传入）
     llm_api_key = request.form.get("llm_api_key", "").strip()
-    llm_model = request.form.get("llm_model", "").strip()
+    llm_model   = request.form.get("llm_model",   "").strip()
 
     # 保存上传文件到临时目录
     tmp_dir = Path(tempfile.mkdtemp(dir=str(UPLOAD_DIR)))
@@ -761,11 +829,10 @@ def api_compare():
         diffs = align_clauses(template_clauses, target_clauses)
 
         # AI 判断（可选）
-        if llm_base_url and llm_api_key and llm_model:
+        if llm_api_key and llm_model:
             try:
                 judge_diffs_with_llm(
                     diffs=diffs,
-                    base_url=llm_base_url,
                     api_key=llm_api_key,
                     model=llm_model,
                 )

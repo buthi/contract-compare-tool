@@ -98,13 +98,13 @@
     }
     .llm-toggle input[type=checkbox] { cursor: pointer; }
     .llm-fields {
-      display: none;
-      margin-top: 12px;
+      margin-top: 14px;
       display: grid;
-      grid-template-columns: 1fr 1fr 1fr;
-      gap: 10px;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
     }
     .llm-fields.hidden { display: none; }
+    .llm-fields select,
     .llm-fields input {
       padding: 10px 14px;
       border: 1px solid #cbd5e1;
@@ -112,8 +112,16 @@
       font-size: 13px;
       outline: none;
       width: 100%;
+      background: #fff;
     }
+    .llm-fields select:focus,
     .llm-fields input:focus { border-color: #6366f1; }
+    .llm-model-hint {
+      grid-column: 1 / -1;
+      font-size: 12px; color: #94a3b8; line-height: 1.6;
+    }
+    /* 模型分组标签样式 */
+    .llm-fields select optgroup { font-weight: 700; color: #475569; }
 
     /* 提交按钮 */
     .submit-row { display: flex; gap: 12px; align-items: center; }
@@ -344,12 +352,35 @@
     <div class="card upload-box llm-section" style="margin-bottom:20px">
       <label class="llm-toggle">
         <input type="checkbox" id="enableLLM" onchange="toggleLLM()" />
-        <span>启用 AI 辅助判断（可选）— 配置 OpenAI 兼容接口后，将对每条差异进行法律效果分析</span>
+        <span>启用 AI 辅助判断（可选）— 选择模型并填入 API Key，将对每条差异进行法律效果分析</span>
       </label>
       <div class="llm-fields hidden" id="llmFields">
-        <input type="text" id="llmBaseUrl" placeholder="Base URL，如 https://api.openai.com/v1" />
-        <input type="password" id="llmApiKey" placeholder="API Key" />
-        <input type="text" id="llmModel" placeholder="模型，如 gpt-4o" />
+        <!-- 模型选择 -->
+        <select id="llmModel">
+          <optgroup label="── 推荐 · 综合能力强 ──">
+            <option value="kimi-k2.5">kimi-k2.5（中文合同推荐）</option>
+            <option value="claude-sonnet-4-5-20250929">claude-sonnet-4-5（深度分析）</option>
+            <option value="gemini-2.5-pro">gemini-2.5-pro</option>
+          </optgroup>
+          <optgroup label="── GPT 新版 ──">
+            <option value="gpt-5.2-chat">gpt-5.2-chat</option>
+            <option value="gpt-5.3-codex">gpt-5.3-codex</option>
+          </optgroup>
+          <optgroup label="── 国产模型 ──">
+            <option value="glm-5">glm-5</option>
+            <option value="qwen3.5-plus">qwen3.5-plus</option>
+            <option value="qwen3-max">qwen3-max</option>
+            <option value="deepseek-v3.2">deepseek-v3.2</option>
+            <option value="doubao-seed-2-0-code-preview-260215">doubao-seed-2-0-code</option>
+            <option value="doubao-seed-2-0-lite-260215">doubao-seed-2-0-lite</option>
+          </optgroup>
+        </select>
+        <!-- API Key -->
+        <input type="password" id="llmApiKey" placeholder="API Key（lvaochun-...）" autocomplete="off" />
+        <div class="llm-model-hint">
+          接口已预配置公司网关 · Base URL 由后端自动路由，无需手动填写 ·
+          Claude 走 Anthropic 格式，GPT 新版走 input 格式，其余走标准 OpenAI chat.completions
+        </div>
       </div>
     </div>
 
@@ -502,12 +533,10 @@ async function submitCompare() {
   formData.append('target',   targetInput.files[0]);
 
   if (document.getElementById('enableLLM').checked) {
-    const baseUrl = document.getElementById('llmBaseUrl').value.trim();
-    const apiKey  = document.getElementById('llmApiKey').value.trim();
-    const model   = document.getElementById('llmModel').value.trim();
-    if (baseUrl) formData.append('llm_base_url', baseUrl);
+    const apiKey = document.getElementById('llmApiKey').value.trim();
+    const model  = document.getElementById('llmModel').value.trim();
     if (apiKey)  formData.append('llm_api_key', apiKey);
-    if (model)   formData.append('llm_model', model);
+    if (model)   formData.append('llm_model',   model);
   }
 
   showLoading(true);

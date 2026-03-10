@@ -627,10 +627,20 @@ function filteredDiffs() {
 
 function renderMeta() {
   const meta = DATA.meta || {};
+  // 模型名展示 badge
+  const modelHtml = meta.aiModel
+    ? `<span style="display:inline-flex;align-items:center;gap:5px;background:#f0fdf4;border:1px solid #bbf7d0;
+         color:#15803d;border-radius:999px;padding:3px 10px;font-size:12px;font-weight:600;">
+         🤖 AI 模型：${escHtml(meta.aiModel)}</span>`
+    : `<span style="display:inline-flex;align-items:center;gap:5px;background:#f1f5f9;border:1px solid #e2e8f0;
+         color:#64748b;border-radius:999px;padding:3px 10px;font-size:12px;">
+         📋 仅规则判断（未启用 AI）</span>`;
   document.getElementById('metaArea').innerHTML = `
-    <div><strong>标准文档：</strong>${escHtml(meta.templateFile || '未提供')}</div>
-    <div><strong>对比文档：</strong>${escHtml(meta.targetFile  || '未提供')}</div>
-    <div><strong>数据来源：</strong>${escHtml(meta.source || 'JSON')}</div>
+    <div style="display:flex;flex-wrap:wrap;align-items:center;gap:16px;margin-top:4px;">
+      <div><strong>标准文档：</strong>${escHtml(meta.templateFile || '未提供')}</div>
+      <div><strong>对比文档：</strong>${escHtml(meta.targetFile  || '未提供')}</div>
+      <div style="margin-left:auto;">${modelHtml}</div>
+    </div>
   `;
 }
 

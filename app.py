@@ -725,6 +725,7 @@ def normalize_data(
     diffs: List[ClauseDiff],
     template_file: str = "",
     target_file: str = "",
+    ai_model: str = "",
 ) -> Dict[str, Any]:
     diff_dicts = [asdict(d) for d in diffs]
     material_count = sum(
@@ -738,6 +739,7 @@ def normalize_data(
             "totalDiffs": len(diff_dicts),
             "materialDiffs": material_count,
             "source": "在线比对",
+            "aiModel": ai_model or "",        # 使用的 AI 模型名，空串表示未启用
         },
         "diffs": diff_dicts,
     }
@@ -845,6 +847,7 @@ def api_compare():
             diffs=diffs,
             template_file=template_file.filename,
             target_file=target_file.filename,
+            ai_model=llm_model if (llm_api_key and llm_model) else "",
         )
         result["ok"] = True
         return jsonify(result)

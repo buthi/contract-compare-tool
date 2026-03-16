@@ -1060,7 +1060,7 @@ body.edit-mode .text-edit{display:block}
             <option value="removed">缺失</option>
             <option value="same">基本一致</option>
           </select>
-          <button id="materialToggle" class="btn active">只看重大差异</button>
+          <button id="materialToggle" class="btn">只看重大差异</button>
         </div>
       </div>
       <div class="list" id="diffList"></div>
@@ -1137,7 +1137,7 @@ body.edit-mode .text-edit{display:block}
 <script>
 // ── 数据 ──────────────────────────────────────────────
 let DATA = /*__DSTART__*/${jsonData}/*__DEND__*/;
-let materialOnly = true, selectedIndex = 0, editMode = false;
+let materialOnly = false, selectedIndex = 0, editMode = false;
 let currentDiffForEdit = null;
 
 // ── 工具函数 ──────────────────────────────────────────

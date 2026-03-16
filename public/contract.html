@@ -117,6 +117,12 @@
     }
     .llm-fields select optgroup { font-weight: 700; color: #475569; }
 
+    /* 工具按钮扩展色 */
+    .toolbar-btn.txt-btn {
+      border-color: #0ea5e9; color: #0369a1; background: #f0f9ff;
+    }
+    .toolbar-btn.txt-btn:hover { background: #0ea5e9; color: #fff; border-color: #0ea5e9; }
+
     /* 提交按钮 */
     .submit-row { display: flex; gap: 12px; align-items: center; }
     .btn-primary {
@@ -504,6 +510,7 @@
       <button class="toolbar-btn edit-mode-btn" id="editModeBtn" onclick="toggleEditMode()">✏️ 进入编辑模式</button>
       <button class="toolbar-btn add-btn" onclick="openAddModal()">＋ 新增差异条款</button>
       <button class="toolbar-btn download-btn" onclick="downloadHTML()">⬇ 下载报告 HTML</button>
+      <button class="toolbar-btn txt-btn" onclick="exportTXT()">📄 导出 AI 摘要 TXT</button>
     </div>
 
     <!-- 编辑模式提示条 -->
@@ -849,6 +856,71 @@ function confirmAddDiff() {
 }
 
 // ════════════════════════════════════════════════════
+// 导出 AI 友好 TXT
+// ════════════════════════════════════════════════════
+function exportTXT() {
+  if (editMode) saveEditsToData();
+  if (!DATA) return;
+  const txt  = buildTXT(DATA);
+  const blob = new Blob([txt], { type: 'text/plain;charset=utf-8' });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  const meta = DATA.meta || {};
+  const fname = (meta.targetFile || '对比报告').replace(/\.[^.]+$/, '').replace(/[\\/:*?"<>|]/g, '_');
+  a.href = url;
+  a.download = `合同差异摘要_${fname}_${new Date().toLocaleDateString('zh-CN').replace(/\//g,'-')}.txt`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+/** 将 DATA 转为 AI 友好纯文本 */
+function buildTXT(data) {
+  const meta  = data.meta  || {};
+  const diffs = data.diffs || [];
+  const ts    = new Date().toLocaleString('zh-CN');
+  const sep   = '═'.repeat(60);
+  const line  = '─'.repeat(60);
+  const sl    = s => ({ modified:'已修改', added:'新增', removed:'缺失', same:'基本一致' }[s] || s);
+  const mf    = d => Boolean(d.ai_material || (!d.ai_checked && d.substantive));
+  const indent = t => (t||'').replace(/\n/g, '\n  ');
+
+  let o = [];
+  o.push(sep);
+  o.push('合同差异分析报告（AI 摘要文本）');
+  o.push(sep);
+  o.push(`生成时间：${ts}`);
+  o.push(`标准文档：${meta.templateFile || '未知'}`);
+  o.push(`对比文档：${meta.targetFile   || '未知'}`);
+  o.push(`AI 模型：${meta.aiModel || '未启用（仅规则判断）'}`);
+  o.push(`总差异数：${diffs.length}  重大差异：${diffs.filter(mf).length}`);
+  o.push('');
+  o.push('【使用说明】本文档包含所有条款差异详情，可直接粘贴给 AI 进行合同法律分析。');
+  o.push(sep);
+  o.push('');
+
+  diffs.forEach((d, i) => {
+    const isMat = mf(d);
+    o.push(`[${String(i+1).padStart(3,'0')}] ${d.clause_id || '未编号'} ${d.title || ''}`.trim());
+    o.push(`  状态：${sl(d.status)}  |  相似度：${((d.similarity||0)*100).toFixed(0)}%  |  重大差异：${isMat ? '是 ⚠️' : '否'}`);
+    if (d.ai_category) o.push(`  分类：${d.ai_category}`);
+    o.push('');
+    if (d.reason)      o.push(`  【规则判断】\n  ${indent(d.reason)}`);
+    if (d.ai_reason)   o.push(`  【AI 判断】\n  ${indent(d.ai_reason)}`);
+    if (d.llm_summary) o.push(`  【差异总结】\n  ${indent(d.llm_summary)}`);
+    o.push('');
+    o.push(`  【模板条款原文】\n  ${indent(d.template_raw || '（模板中无对应条款）')}`);
+    o.push('');
+    o.push(`  【目标条款原文】\n  ${indent(d.target_raw || '（目标协议中无对应条款）')}`);
+    o.push('');
+    o.push(line);
+    o.push('');
+  });
+
+  o.push('── 报告结束 ──');
+  return o.join('\n');
+}
+
+// ════════════════════════════════════════════════════
 // 下载 HTML 报告（含完整编辑功能）
 // ════════════════════════════════════════════════════
 function downloadHTML() {
@@ -887,8 +959,10 @@ body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang 
 .toolbar-btn.edit-mode-btn:hover,.toolbar-btn.edit-mode-btn.active{background:#f59e0b;color:#fff;border-color:#f59e0b}
 .toolbar-btn.add-btn{border-color:#10b981;color:#047857;background:#f0fdf4}
 .toolbar-btn.add-btn:hover{background:#10b981;color:#fff;border-color:#10b981}
-.toolbar-btn.save-btn{border-color:#6366f1;color:#4338ca;background:#eef2ff;margin-left:auto}
+.toolbar-btn.save-btn{border-color:#6366f1;color:#4338ca;background:#eef2ff}
 .toolbar-btn.save-btn:hover{background:#6366f1;color:#fff;border-color:#6366f1}
+.toolbar-btn.txt-btn{border-color:#0ea5e9;color:#0369a1;background:#f0f9ff;margin-left:auto}
+.toolbar-btn.txt-btn:hover{background:#0ea5e9;color:#fff;border-color:#0ea5e9}
 .edit-mode-bar{display:none;padding:10px 18px;background:#fffbeb;border:1px solid #fde68a;border-radius:12px;font-size:13px;color:#92400e;margin-bottom:12px;align-items:center;gap:10px}
 body.edit-mode .edit-mode-bar{display:flex}
 .layout{display:grid;grid-template-columns:380px minmax(0,1fr);gap:20px;min-height:70vh}
@@ -959,12 +1033,13 @@ body.edit-mode .text-edit{display:block}
   <div class="result-toolbar">
     <button class="toolbar-btn edit-mode-btn" id="editModeBtn" onclick="toggleEditMode()">✏️ 进入编辑模式</button>
     <button class="toolbar-btn add-btn" onclick="openAddModal()">＋ 新增差异条款</button>
-    <button class="toolbar-btn save-btn" onclick="reDownload()">⬇ 保存为新 HTML</button>
+    <button class="toolbar-btn save-btn" onclick="reDownload()">⬇ 另存为新 HTML</button>
+    <button class="toolbar-btn txt-btn" onclick="exportTXT()">📄 导出 AI 摘要 TXT</button>
   </div>
 
   <!-- 编辑模式提示条 -->
   <div class="edit-mode-bar">
-    ✏️ <strong>编辑模式已开启</strong> — 可直接修改下方文本框内容；点击列表项右上角 ✕ 删除该条款；退出编辑模式后内容自动保存至数据，再点「保存为新 HTML」即可更新文件。
+    ✏️ <strong>编辑模式已开启</strong> — 修改文本框后切换条款或退出即自动保存；每次修改自动存入浏览器本地（刷新不丢失）；需要永久保存请点「另存为新 HTML」覆盖本文件。
   </div>
 
   <div class="card header">
@@ -1061,7 +1136,7 @@ body.edit-mode .text-edit{display:block}
 
 <script>
 // ── 数据 ──────────────────────────────────────────────
-let DATA = ${jsonData};
+let DATA = /*__DSTART__*/${jsonData}/*__DEND__*/;
 let materialOnly = true, selectedIndex = 0, editMode = false;
 let currentDiffForEdit = null;
 
@@ -1158,6 +1233,7 @@ function saveEditsToData(){
   d.template_excerpt=d.template_raw.slice(0,300);
   d.target_excerpt=d.target_raw.slice(0,300);
   if(DATA&&DATA.meta){DATA.meta.totalDiffs=DATA.diffs.length;DATA.meta.materialDiffs=DATA.diffs.filter(materialFlag).length;}
+  autoSave();
 }
 function toggleEditMode(){
   if(editMode){
@@ -1180,6 +1256,7 @@ function deleteDiff(gi,e){
   if(!confirm('确定删除条款「'+DATA.diffs[gi].clause_id+'」吗？'))return;
   DATA.diffs.splice(gi,1);
   DATA.meta.totalDiffs=DATA.diffs.length;DATA.meta.materialDiffs=DATA.diffs.filter(materialFlag).length;
+  autoSave();
   currentDiffForEdit=null;selectedIndex=0;renderMeta();renderList();
 }
 
@@ -1207,27 +1284,80 @@ function confirmAddDiff(){
     target_excerpt:document.getElementById('m_target_raw').value.trim().slice(0,300),
   };
   DATA.diffs.push(nd);DATA.meta.totalDiffs=DATA.diffs.length;DATA.meta.materialDiffs=DATA.diffs.filter(materialFlag).length;
+  autoSave();
   closeAddModal();materialOnly=false;selectedIndex=DATA.diffs.length-1;
   const fi=filteredDiffs().findIndex(d=>d===nd);if(fi>=0)selectedIndex=fi;
   renderMeta();renderList();
 }
 document.getElementById('addModal').addEventListener('click',e=>{if(e.target===document.getElementById('addModal'))closeAddModal();});
 
-// ── 再次下载（保存为新 HTML） ───────────────────────────
+// ── localStorage 自动保存（刷新不丢失） ────────────────────
+const LS_KEY='cda_v1_'+btoa(encodeURIComponent((DATA.meta?.templateFile||'')+'|'+(DATA.meta?.targetFile||''))).slice(0,24);
+function autoSave(){try{localStorage.setItem(LS_KEY,JSON.stringify(DATA));}catch(e){}}
+function saveEditsAndPersist(){saveEditsToData();autoSave();}
+
+// ── 另存为新 HTML ──────────────────────────────────────────
+// 从当前页面 outerHTML 取源码，替换 DATA 行后下载
 function reDownload(){
   if(editMode)saveEditsToData();
-  // 将当前 DATA 序列化后替换页面中的数据块并触发下载
-  const newJson=JSON.stringify(DATA);
-  const src=document.documentElement.outerHTML;
-  // 替换 DATA 初始化行
-  const updated=src.replace(/let DATA = .*;/, 'let DATA = '+newJson+';');
-  const blob=new Blob([updated],{type:'text/html;charset=utf-8'});
+  autoSave();
+  // 获取当前页面完整源码（脚本内容不受 DOM 操作影响，DATA 行保持原始形式）
+  var src=document.documentElement.outerHTML;
+  // 新的 DATA JSON（含全部编辑）
+  var newJson=JSON.stringify(DATA);
+  // 替换 DATA 占位符区域（匹配两个注释标记之间的内容）
+  var final=src.replace(/\/\*__DSTART__\*\/[\s\S]*?\/\*__DEND__\*\//,'/*__DSTART__*/'+newJson+'/*__DEND__*/');
+  if(final===src){alert('未能定位 DATA 占位符，请从主页面重新生成报告');return;}
+  var m=DATA.meta||{};
+  var fname=(m.targetFile||'\u5bf9\u6bd4\u62a5\u544a').replace(/\.[^.]+$/,'').replace(/[\/\\/:*?"<>|]/g,'_');
+  var blob=new Blob([final],{type:'text/html;charset=utf-8'});
+  var url=URL.createObjectURL(blob);
+  var a=document.createElement('a');
+  a.href=url;
+  a.download='\u5408\u540c\u5dee\u5f02\u62a5\u544a_'+fname+'_edited.html';
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+// ── 导出 AI 摘要 TXT ──────────────────────────────────────
+function exportTXT(){
+  if(editMode)saveEditsToData();
+  const txt=buildTXT(DATA);
+  const blob=new Blob([txt],{type:'text/plain;charset=utf-8'});
   const url=URL.createObjectURL(blob);
   const a=document.createElement('a');
   const m=DATA.meta||{};
-  const fname=(m.targetFile||'对比报告').replace(/\\.[^.]+$/,'').replace(/[\\\\\\/:*?"<>|]/g,'_');
-  a.href=url;a.download='合同差异报告_'+fname+'_edited.html';a.click();
+  const fname=(m.targetFile||'对比报告').replace(/\\.[^.]+$/,'').replace(/[\\/\\\\/:*?"<>|]/g,'_');
+  a.href=url;a.download='合同差异摘要_'+fname+'.txt';a.click();
   URL.revokeObjectURL(url);
+}
+function buildTXT(data){
+  const meta=data.meta||{},diffs=data.diffs||[];
+  const ts=new Date().toLocaleString('zh-CN');
+  const sep='═'.repeat(60),ln='─'.repeat(60);
+  const sl=s=>({modified:'已修改',added:'新增',removed:'缺失',same:'基本一致'}[s]||s);
+  const mf=d=>Boolean(d.ai_material||(!d.ai_checked&&d.substantive));
+  const ind=t=>(t||'').replace(/\\n/g,'\\n  ');
+  let o=[];
+  o.push(sep,'合同差异分析报告（AI 摘要文本）',sep);
+  o.push('生成时间：'+ts,'标准文档：'+(meta.templateFile||'未知'),'对比文档：'+(meta.targetFile||'未知'));
+  o.push('AI 模型：'+(meta.aiModel||'未启用（仅规则判断）'));
+  o.push('总差异数：'+diffs.length+'  重大差异：'+diffs.filter(mf).length,'');
+  o.push('【使用说明】本文档包含所有条款差异详情，可直接粘贴给 AI 进行合同法律分析。',sep,'');
+  diffs.forEach((d,i)=>{
+    o.push('['+String(i+1).padStart(3,'0')+'] '+(d.clause_id||'未编号')+' '+(d.title||''));
+    o.push('  状态：'+sl(d.status)+'  |  相似度：'+((d.similarity||0)*100).toFixed(0)+'%  |  重大差异：'+(mf(d)?'是 ⚠️':'否'));
+    if(d.ai_category)o.push('  分类：'+d.ai_category);
+    o.push('');
+    if(d.reason)o.push('  【规则判断】\\n  '+ind(d.reason));
+    if(d.ai_reason)o.push('  【AI 判断】\\n  '+ind(d.ai_reason));
+    if(d.llm_summary)o.push('  【差异总结】\\n  '+ind(d.llm_summary));
+    o.push('','  【模板条款原文】','  '+ind(d.template_raw||'（模板中无对应条款）'));
+    o.push('','  【目标条款原文】','  '+ind(d.target_raw||'（目标协议中无对应条款）'));
+    o.push('',ln,'');
+  });
+  o.push('── 报告结束 ──');
+  return o.join('\\n');
 }
 
 // ── 事件绑定 ──────────────────────────────────────────
@@ -1235,8 +1365,22 @@ document.getElementById('searchInput').addEventListener('input',()=>{if(editMode
 document.getElementById('statusFilter').addEventListener('change',()=>{if(editMode)saveEditsToData();selectedIndex=0;renderList();});
 document.getElementById('materialToggle').addEventListener('click',e=>{if(editMode)saveEditsToData();materialOnly=!materialOnly;e.target.classList.toggle('active',materialOnly);e.target.textContent=materialOnly?'只看重大差异':'显示全部条款';selectedIndex=0;renderList();});
 
-// ── 初始化 ────────────────────────────────────────────
-renderMeta();renderList();
+// ── 初始化：优先从 localStorage 恢复编辑内容 ─────────────
+(function init(){
+  try{
+    const s=localStorage.getItem(LS_KEY);
+    if(s){
+      const saved=JSON.parse(s);
+      // 确认是同一份报告再恢复
+      if(saved&&saved.meta&&saved.diffs&&
+         saved.meta.templateFile===DATA.meta?.templateFile&&
+         saved.meta.targetFile===DATA.meta?.targetFile){
+        DATA=saved;
+      }
+    }
+  }catch(e){}
+  renderMeta();renderList();
+})();
 <\/script>
 </body>
 </html>`;
